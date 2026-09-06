@@ -1,16 +1,392 @@
-<!doctype html>
-<html lang="en">
-	<head>
-		<meta charset="UTF-8" />
-		<link
-			rel="icon"
-			href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 66 30'><path fill='%23000000' d='M52.688 13.028c-.22 0-.437.008-.654.015a.3.3 0 0 0-.102.024.37.37 0 0 0-.236.255l-.93 3.249c-.401 1.397-.252 2.687.422 3.634.618.876 1.646 1.39 2.894 1.45l5.045.306a.45.45 0 0 1 .435.41.5.5 0 0 1-.025.223.64.64 0 0 1-.547.426l-5.242.306c-2.848.132-5.912 2.456-6.987 5.29l-.378 1a.28.28 0 0 0 .248.382h18.054a.48.48 0 0 0 .464-.35c.32-1.153.482-2.344.48-3.54 0-7.22-5.79-13.072-12.933-13.072M44.807 29.578l.334-1.175c.402-1.397.253-2.687-.42-3.634-.62-.876-1.647-1.39-2.896-1.45l-23.665-.306a.47.47 0 0 1-.374-.199.5.5 0 0 1-.052-.434.64.64 0 0 1 .552-.426l23.886-.306c2.836-.131 5.9-2.456 6.975-5.29l1.362-3.6a.9.9 0 0 0 .04-.477C48.997 5.259 42.789 0 35.367 0c-6.842 0-12.647 4.462-14.73 10.665a6.92 6.92 0 0 0-4.911-1.374c-3.28.33-5.92 3.002-6.246 6.318a7.2 7.2 0 0 0 .18 2.472C4.3 18.241 0 22.679 0 28.133q0 .74.106 1.453a.46.46 0 0 0 .457.402h43.704a.57.57 0 0 0 .54-.418'/></svg>"
-		/>
-		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-		<title>Workflows Starter Template</title>
-	</head>
-	<body>
-		<div id="root"></div>
-		<script type="module" src="/src/main.tsx"></script>
-	</body>
-</html>
+import { WorkflowEntrypoint, DurableObject } from "cloudflare:workers";
+
+/**
+ * Imvara Project Run Workflow
+ *
+ * Current purpose:
+ * Establish and verify the durable Cloudflare Workflow execution envelope
+ * before connecting it to Imvara Runtime and MOM platform capabilities.
+ *
+ * Genericity rule:
+ * No client-, brand-, Vertical-, or Job-specific logic belongs here.
+ */
+export class ProjectRunWorkflow extends WorkflowEntrypoint {
+  async run(event: any, step: any) {
+    const instanceId = event.instanceId;
+
+    const notifyStep = async (stepName: string, status: string) => {
+      try {
+        const doId = this.env.WORKFLOW_STATUS.idFromName(instanceId);
+        const stub = this.env.WORKFLOW_STATUS.get(doId);
+
+        await stub.updateStep(stepName, status);
+      } catch {
+        // Workflow execution must not fail only because
+        // real-time status notification is unavailable.
+      }
+    };
+
+    await notifyStep("process data", "running");
+
+    const result = await step.do("process data", async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
+      return {
+        processed: true,
+        timestamp: Date.now(),
+      };
+    });
+
+    await notifyStep("process data", "completed");
+
+    await notifyStep("wait 2 seconds", "running");
+
+    await step.sleep("wait 2 seconds", "2 seconds");
+
+    await notifyStep("wait 2 seconds", "completed");
+
+    await notifyStep("wait for approval", "waiting");
+
+    const approval = await step.waitForEvent("wait for approval", {
+      type: "user-approval",
+      timeout: "60 minutes",
+    });
+
+    await notifyStep("wait for approval", "completed");
+
+    await notifyStep("final", "running");
+
+    await step.do("final", async () => {
+      console.log("Results:", {
+        result,
+        approval: approval.payload,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    });
+
+    await notifyStep("final", "completed");
+  }
+}
+
+/**
+ * Durable Object used only for Workflow status streaming.
+ *
+ * This remains named WorkflowStatusDO because it already has an established
+ * Durable Object migration. Renaming it provides no production value yet.
+ */
+export class WorkflowStatusDO extends DurableObject {
+  stepStatuses: Map<string, string>;
+  currentStep: string | null;
+  workflowStatus: string;
+
+  constructor(ctx: any, env: any) {
+    super(ctx, env);
+
+    this.stepStatuses = new Map();
+    this.currentStep = null;
+    this.workflowStatus = "running";
+
+    ctx.blockConcurrencyWhile(async () => {
+      const storedStatuses = await ctx.storage.get("stepStatuses");
+      const storedCurrent = await ctx.storage.get("currentStep");
+      const storedWorkflowStatus = await ctx.storage.get("workflowStatus");
+
+      if (storedStatuses) {
+        this.stepStatuses = new Map(
+          Object.entries(storedStatuses as Record<string, string>)
+        );
+      } else {
+        const steps = [
+          "process data",
+          "wait 2 seconds",
+          "wait for approval",
+          "final",
+        ];
+
+        steps.forEach((stepName) => {
+          this.stepStatuses.set(stepName, "pending");
+        });
+      }
+
+      this.currentStep = (storedCurrent as string | null | undefined) ?? null;
+      this.workflowStatus =
+        (storedWorkflowStatus as string | undefined) ?? "running";
+    });
+  }
+
+  async fetch(request: Request) {
+    if (request.headers.get("Upgrade") === "websocket") {
+      const pair = new WebSocketPair();
+
+      const [client, server] = Object.values(pair);
+
+      this.ctx.acceptWebSocket(server);
+
+      server.send(JSON.stringify(this.getStateMessage()));
+
+      return new Response(null, {
+        status: 101,
+        webSocket: client,
+      });
+    }
+
+    return new Response("Expected WebSocket", {
+      status: 400,
+    });
+  }
+
+  async updateStep(stepName: string, status: string) {
+    this.stepStatuses.set(stepName, status);
+
+    if (status === "running" || status === "waiting") {
+      this.currentStep = stepName;
+    }
+
+    const allCompleted = Array.from(this.stepStatuses.values()).every(
+      (stepStatus) => stepStatus === "completed"
+    );
+
+    if (allCompleted) {
+      this.workflowStatus = "completed";
+      this.currentStep = null;
+    }
+
+    await this.ctx.storage.put(
+      "stepStatuses",
+      Object.fromEntries(this.stepStatuses)
+    );
+
+    await this.ctx.storage.put("currentStep", this.currentStep);
+
+    await this.ctx.storage.put(
+      "workflowStatus",
+      this.workflowStatus
+    );
+
+    this.broadcast(this.getStateMessage());
+  }
+
+  async webSocketMessage(ws: WebSocket, _message: string | ArrayBuffer) {
+    ws.send(JSON.stringify(this.getStateMessage()));
+  }
+
+  async webSocketClose(
+    ws: WebSocket,
+    code: number,
+    reason: string,
+    _wasClean: boolean
+  ) {
+    ws.close(code, reason);
+  }
+
+  broadcast(message: Record<string, unknown>) {
+    const sockets = this.ctx.getWebSockets();
+
+    const json = JSON.stringify(message);
+
+    for (const socket of sockets) {
+      try {
+        socket.send(json);
+      } catch {
+        // Ignore disconnected WebSocket clients.
+      }
+    }
+  }
+
+  getStateMessage() {
+    return {
+      type: "workflow_update",
+      currentStep: this.currentStep,
+      stepStatuses: Object.fromEntries(this.stepStatuses),
+      workflowStatus: this.workflowStatus,
+      timestamp: Date.now(),
+    };
+  }
+}
+
+/**
+ * HTTP interface used to create, inspect, and continue Workflow instances.
+ *
+ * This is still starter-level behavior.
+ * We are intentionally proving durable Workflow execution before wiring
+ * Imvara Runtime or MOM methodology into it.
+ */
+const worker = {
+  async fetch(request: Request, env: any) {
+    const url = new URL(request.url);
+
+    if (
+      url.pathname === "/api/workflow/start" &&
+      request.method === "POST"
+    ) {
+      try {
+        const instance = await env.PROJECT_RUN_WORKFLOW.create({
+          params: {
+            timestamp: Date.now(),
+          },
+        });
+
+        return Response.json({
+          instanceId: instance.id,
+          message: "Project Run workflow started successfully",
+        });
+      } catch (error) {
+        console.error("Failed to start Project Run workflow:", error);
+
+        return Response.json(
+          {
+            error: "Failed to start Project Run workflow",
+          },
+          {
+            status: 500,
+          }
+        );
+      }
+    }
+
+    if (url.pathname.startsWith("/api/workflow/status/")) {
+      const instanceId = url.pathname.split("/").pop();
+
+      if (!instanceId) {
+        return Response.json(
+          {
+            error: "Instance ID required",
+          },
+          {
+            status: 400,
+          }
+        );
+      }
+
+      try {
+        const instance = await env.PROJECT_RUN_WORKFLOW.get(instanceId);
+
+        const status = await instance.status();
+
+        return Response.json(status);
+      } catch (error) {
+        console.error("Failed to get Project Run workflow status:", error);
+
+        return Response.json(
+          {
+            error: "Failed to get Project Run workflow status",
+          },
+          {
+            status: 500,
+          }
+        );
+      }
+    }
+
+    if (
+      url.pathname.startsWith("/api/workflow/event/") &&
+      request.method === "POST"
+    ) {
+      const instanceId = url.pathname.split("/").pop();
+
+      if (!instanceId) {
+        return Response.json(
+          {
+            error: "Instance ID required",
+          },
+          {
+            status: 400,
+          }
+        );
+      }
+
+      try {
+        const body = await request.json();
+
+        const instance = await env.PROJECT_RUN_WORKFLOW.get(instanceId);
+
+        await instance.sendEvent({
+          type: "user-approval",
+          payload: body,
+        });
+
+        return Response.json({
+          success: true,
+          message: "Workflow event sent successfully",
+        });
+      } catch (error) {
+        console.error("Failed to send Project Run workflow event:", error);
+
+        return Response.json(
+          {
+            error: "Failed to send Project Run workflow event",
+          },
+          {
+            status: 500,
+          }
+        );
+      }
+    }
+
+    if (url.pathname === "/ws") {
+      const instanceId = url.searchParams.get("instanceId");
+
+      if (!instanceId) {
+        return new Response(
+          "instanceId query parameter required",
+          {
+            status: 400,
+          }
+        );
+      }
+
+      const upgradeHeader = request.headers.get("Upgrade");
+
+      if (upgradeHeader !== "websocket") {
+        return new Response(
+          "Expected Upgrade: websocket",
+          {
+            status: 426,
+          }
+        );
+      }
+
+      try {
+        const doId = env.WORKFLOW_STATUS.idFromName(instanceId);
+
+        const stub = env.WORKFLOW_STATUS.get(doId);
+
+        return stub.fetch(request);
+      } catch (error) {
+        console.error(
+          "Failed to establish Workflow WebSocket:",
+          error
+        );
+
+        return new Response(
+          "Failed to establish WebSocket connection",
+          {
+            status: 500,
+          }
+        );
+      }
+    }
+
+    if (url.pathname === "/health") {
+      return Response.json({
+        ok: true,
+        service: "imvara-project-run",
+        workflow_binding: "PROJECT_RUN_WORKFLOW",
+        workflow_class: "ProjectRunWorkflow",
+        durable_status: true,
+      });
+    }
+
+    return Response.json(
+      {
+        error: "Not Found",
+      },
+      {
+        status: 404,
+      }
+    );
+  },
+};
+
+export default worker;
