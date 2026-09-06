@@ -1,65 +1,140 @@
-import { WorkflowEntrypoint, WorkflowStep } from "cloudflare:workers";
+import {
+	WorkflowEntrypoint,
+	WorkflowStep,
+} from "cloudflare:workers";
 import type { WorkflowEvent } from "cloudflare:workers";
 
 /**
- * This workflow showcases:
- * - Durable step execution with step.do
- * - Time-based delays with step.sleep
- * - Interactive pausing with step.waitForEvent
- * - Data flow between steps
+ * Imvara Project Run Workflow
  *
- * @see https://developers.cloudflare.com/workflows
+ * Purpose:
+ * Establish and verify the durable Cloudflare Workflow execution envelope
+ * before connecting Project Runs to Imvara Runtime and MOM capabilities.
+ *
+ * Genericity rule:
+ * No client-, brand-, Vertical-, Job-, or engagement-specific logic belongs
+ * in this Workflow implementation. Engagement context must arrive at runtime.
  */
-export class MyWorkflow extends WorkflowEntrypoint<
+
+export type ProjectRunWorkflowParams = {
+	engagement_id?: string;
+	vertical_version_id?: string;
+	project_run_id?: string;
+	requested_by?: string;
+	started_at?: string;
+};
+
+export class ProjectRunWorkflow extends WorkflowEntrypoint<
 	Env,
-	Record<string, unknown>
+	ProjectRunWorkflowParams
 > {
-	async run(event: WorkflowEvent<Record<string, unknown>>, step: WorkflowStep) {
+	async run(
+		event: WorkflowEvent<ProjectRunWorkflowParams>,
+		step: WorkflowStep,
+	) {
 		const instanceId = event.instanceId;
 
-		// Notify Durable Object of step progress. Called outside step.do, so this
-		// operation may repeat. Safe here because updateStep is idempotent.
-		// Refer to: https://developers.cloudflare.com/workflows/build/rules-of-workflows/
 		const notifyStep = async (
 			stepName: string,
-			status: "running" | "completed" | "waiting",
+			status: "running" | "completed" | "waiting" | "error",
 		) => {
 			try {
-				const doId = this.env.WORKFLOW_STATUS.idFromName(instanceId);
-				const stub = this.env.WORKFLOW_STATUS.get(doId);
+				const doId =
+					this.env.WORKFLOW_STATUS.idFromName(instanceId);
+
+				const stub =
+					this.env.WORKFLOW_STATUS.get(doId);
+
 				await stub.updateStep(stepName, status);
 			} catch {
-				// Silently fail
+				/**
+				 * Real-time status delivery is observational.
+				 *
+				 * A Project Run must not fail merely because the Durable Object
+				 * status channel is temporarily unavailable.
+				 */
 			}
 		};
 
-		// Step 1: Basic step - shows step.do usage
-		await notifyStep("process data", "running");
-		const result = await step.do("process data", async () => {
-			await new Promise((resolve) => setTimeout(resolve, 1000));
-			return { processed: true, timestamp: Date.now() };
-		});
-		await notifyStep("process data", "completed");
+		await notifyStep(
+			"initialize project run",
+			"running",
+		);
 
-		// Step 2: Sleep step - shows step.sleep for delays
-		await notifyStep("wait 2 seconds", "running");
-		await step.sleep("wait 2 seconds", "2 seconds");
-		await notifyStep("wait 2 seconds", "completed");
+		const initialization = await step.do(
+			"initialize project run",
+			async () => {
+				return {
+					instance_id: instanceId,
+					params: event.payload,
+					initialized_at: new Date().toISOString(),
+				};
+			},
+		);
 
-		// Step 3: Wait for event - shows interactive step.waitForEvent
-		await notifyStep("wait for approval", "waiting");
-		const approval = await step.waitForEvent("wait for approval", {
-			type: "user-approval",
-			timeout: "60 minutes",
-		});
-		await notifyStep("wait for approval", "completed");
+		await notifyStep(
+			"initialize project run",
+			"completed",
+		);
 
-		// Step 4: Final step
-		await notifyStep("final", "running");
-		await step.do("final", async () => {
-			console.log("Results:", { result, approval: approval.payload });
-			await new Promise((resolve) => setTimeout(resolve, 1000));
-		});
-		await notifyStep("final", "completed");
+		await notifyStep(
+			"durability checkpoint",
+			"running",
+		);
+
+		await step.sleep(
+			"durability checkpoint",
+			"2 seconds",
+		);
+
+		await notifyStep(
+			"durability checkpoint",
+			"completed",
+		);
+
+		await notifyStep(
+			"governance checkpoint",
+			"waiting",
+		);
+
+		const governanceEvent =
+			await step.waitForEvent<Record<string, unknown>>(
+				"governance checkpoint",
+				{
+					type: "governance-decision",
+					timeout: "60 minutes",
+				},
+			);
+
+		await notifyStep(
+			"governance checkpoint",
+			"completed",
+		);
+
+		await notifyStep(
+			"complete project run envelope",
+			"running",
+		);
+
+		const completion = await step.do(
+			"complete project run envelope",
+			async () => {
+				return {
+					instance_id: instanceId,
+					initialization,
+					governance_decision:
+						governanceEvent.payload,
+					completed_at:
+						new Date().toISOString(),
+				};
+			},
+		);
+
+		await notifyStep(
+			"complete project run envelope",
+			"completed",
+		);
+
+		return completion;
 	}
 }
