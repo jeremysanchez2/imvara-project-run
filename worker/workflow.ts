@@ -24,6 +24,25 @@ export type ProjectRunWorkflowParams = {
 	started_at?: string;
 };
 
+/**
+ * Generic governance event payload.
+ *
+ * Cloudflare Workflow step/event values must be serializable.
+ * Do not use Record<string, unknown> here because `unknown` does not satisfy
+ * Cloudflare's Workflow Serializable constraint.
+ *
+ * This contract deliberately contains only generic governance metadata.
+ * The meaning and consequences of a decision belong to governed runtime data
+ * and platform contracts, not this Workflow.
+ */
+export type GovernanceDecisionPayload = {
+	approved?: boolean;
+	decision?: string;
+	comment?: string;
+	decided_by?: string;
+	decided_at?: string;
+};
+
 export class ProjectRunWorkflow extends WorkflowEntrypoint<
 	Env,
 	ProjectRunWorkflowParams
@@ -66,7 +85,18 @@ export class ProjectRunWorkflow extends WorkflowEntrypoint<
 			async () => {
 				return {
 					instance_id: instanceId,
-					params: event.payload,
+					params: {
+						engagement_id:
+							event.payload.engagement_id,
+						vertical_version_id:
+							event.payload.vertical_version_id,
+						project_run_id:
+							event.payload.project_run_id,
+						requested_by:
+							event.payload.requested_by,
+						started_at:
+							event.payload.started_at,
+					},
 					initialized_at: new Date().toISOString(),
 				};
 			},
@@ -98,7 +128,7 @@ export class ProjectRunWorkflow extends WorkflowEntrypoint<
 		);
 
 		const governanceEvent =
-			await step.waitForEvent<Record<string, unknown>>(
+			await step.waitForEvent<GovernanceDecisionPayload>(
 				"governance checkpoint",
 				{
 					type: "governance-decision",
@@ -122,8 +152,18 @@ export class ProjectRunWorkflow extends WorkflowEntrypoint<
 				return {
 					instance_id: instanceId,
 					initialization,
-					governance_decision:
-						governanceEvent.payload,
+					governance_decision: {
+						approved:
+							governanceEvent.payload.approved,
+						decision:
+							governanceEvent.payload.decision,
+						comment:
+							governanceEvent.payload.comment,
+						decided_by:
+							governanceEvent.payload.decided_by,
+						decided_at:
+							governanceEvent.payload.decided_at,
+					},
 					completed_at:
 						new Date().toISOString(),
 				};
