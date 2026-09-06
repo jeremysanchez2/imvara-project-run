@@ -1,48 +1,114 @@
-import { env, introspectWorkflowInstance } from "cloudflare:test";
-import { describe, it, expect } from "vitest";
+import {
+	env,
+	introspectWorkflowInstance,
+} from "cloudflare:test";
+import {
+	describe,
+	it,
+	expect,
+} from "vitest";
 
-describe("MyWorkflow", () => {
-	it("completes and returns expected step result", async () => {
-		const instanceId = `test-${Date.now()}`;
+describe("ProjectRunWorkflow", () => {
+	it(
+		"completes the durable Project Run envelope after governance decision",
+		async () => {
+			const instanceId =
+				`project-run-test-${Date.now()}`;
 
-		await using instance = await introspectWorkflowInstance(
-			env.MY_WORKFLOW,
-			instanceId,
-		);
+			await using instance =
+				await introspectWorkflowInstance(
+					env.PROJECT_RUN_WORKFLOW,
+					instanceId,
+				);
 
-		await instance.modify(async (m) => {
-			await m.disableSleeps();
-			await m.mockEvent({
-				type: "user-approval",
-				payload: { approved: true },
+			await instance.modify(async (m) => {
+				await m.disableSleeps();
+
+				await m.mockEvent({
+					type: "governance-decision",
+					payload: {
+						approved: true,
+						decision: "approved",
+						comment:
+							"Workflow test governance decision",
+					},
+				});
 			});
-		});
 
-		await env.MY_WORKFLOW.create({ id: instanceId });
+			await env.PROJECT_RUN_WORKFLOW.create({
+				id: instanceId,
+				params: {
+					engagement_id:
+						"test-engagement",
+					vertical_version_id:
+						"test-vertical:v1",
+					project_run_id:
+						instanceId,
+					requested_by:
+						"workflow-test",
+					started_at:
+						new Date().toISOString(),
+				},
+			});
 
-		const result = await instance.waitForStepResult({ name: "process data" });
+			const result =
+				await instance.waitForStepResult({
+					name:
+						"complete project run envelope",
+				});
 
-		expect(result).toMatchObject({
-			processed: true,
-		});
-		expect(result).toHaveProperty("timestamp");
-	});
+			expect(result).toMatchObject({
+				instance_id: instanceId,
+				governance_decision: {
+					approved: true,
+					decision: "approved",
+					comment:
+						"Workflow test governance decision",
+				},
+			});
 
-	it("errors when approval event times out", async () => {
-		const instanceId = `test-${Date.now()}`;
+			expect(result).toHaveProperty(
+				"initialization",
+			);
 
-		await using instance = await introspectWorkflowInstance(
-			env.MY_WORKFLOW,
-			instanceId,
-		);
+			expect(result).toHaveProperty(
+				"completed_at",
+			);
+		},
+	);
 
-		await instance.modify(async (m) => {
-			await m.disableSleeps();
-			await m.forceEventTimeout({ name: "wait for approval" });
-		});
+	it(
+		"errors when the governance checkpoint times out",
+		async () => {
+			const instanceId =
+				`project-run-timeout-test-${Date.now()}`;
 
-		await env.MY_WORKFLOW.create({ id: instanceId });
+			await using instance =
+				await introspectWorkflowInstance(
+					env.PROJECT_RUN_WORKFLOW,
+					instanceId,
+				);
 
-		await expect(instance.waitForStatus("errored")).resolves.not.toThrow();
-	});
+			await instance.modify(async (m) => {
+				await m.disableSleeps();
+
+				await m.forceEventTimeout({
+					name:
+						"governance checkpoint",
+				});
+			});
+
+			await env.PROJECT_RUN_WORKFLOW.create({
+				id: instanceId,
+				params: {
+					project_run_id:
+						instanceId,
+				},
+			});
+
+			await expect(
+				instance.waitForStatus("errored"),
+			).resolves.not.toThrow();
+		},
+	);
 });
