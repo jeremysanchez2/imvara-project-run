@@ -26,6 +26,20 @@
 	},
 
 	/**
+	 * Service bindings
+	 *
+	 * Project Run orchestrates governed platform capabilities through
+	 * service bindings. Capability Workers retain ownership of their
+	 * own methodology, persistence rules, and execution semantics.
+	 */
+	"services": [
+		{
+			"binding": "INTELLIGENCE_PROCESSING",
+			"service": "imvara-intelligence-processing"
+		}
+	],
+
+	/**
 	 * Cloudflare Workflow
 	 *
 	 * A Project Run is the durable execution envelope for an Imvara engagement.
