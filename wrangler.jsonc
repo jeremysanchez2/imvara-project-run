@@ -1,35 +1,51 @@
 /**
- * For more details on how to configure Wrangler, refer to:
- * https://developers.cloudflare.com/workers/wrangler/configuration/
+ * Imvara Project Run
+ *
+ * Cloudflare Worker + Workflow configuration.
+ *
+ * Platform role:
+ * Durable execution of governed Imvara Project Runs.
+ *
+ * Genericity rule:
+ * No client-, brand-, Vertical-, or Job-specific logic belongs here.
  */
+
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "imvara-project-run",
 	"main": "worker/index.ts",
 	"compatibility_date": "2025-10-08",
+
 	"assets": {
 		"directory": "./dist",
 		"not_found_handling": "single-page-application"
 	},
+
 	"observability": {
 		"enabled": true
 	},
+
 	/**
-	 * Workflows
-	 * Define Workflows to orchestrate multi-step processes
-	 * https://developers.cloudflare.com/workflows/
+	 * Cloudflare Workflow
+	 *
+	 * A Project Run is the durable execution envelope for an Imvara engagement.
+	 * Runtime data determines engagement, Vertical/version, evidence, Jobs,
+	 * capabilities, governance state, and downstream actions.
 	 */
 	"workflows": [
 		{
-			"name": "my-workflow",
-			"binding": "MY_WORKFLOW",
-			"class_name": "MyWorkflow"
+			"name": "imvara-project-run",
+			"binding": "PROJECT_RUN_WORKFLOW",
+			"class_name": "ProjectRunWorkflow"
 		}
 	],
+
 	/**
-	 * Durable Objects
-	 * Used for WebSocket state management and real-time updates
-	 * https://developers.cloudflare.com/durable-objects/
+	 * Durable Object
+	 *
+	 * Retained from the Cloudflare starter for real-time Workflow state.
+	 * We are deliberately not renaming this class yet because doing so would
+	 * introduce an unnecessary Durable Object migration during Workflow setup.
 	 */
 	"durable_objects": {
 		"bindings": [
@@ -39,9 +55,11 @@
 			}
 		]
 	},
+
 	/**
-	 * Migrations
-	 * Required for Durable Objects
+	 * Existing Durable Object migration.
+	 *
+	 * Do not alter this migration tag after deployment.
 	 */
 	"migrations": [
 		{
@@ -49,5 +67,6 @@
 			"new_sqlite_classes": ["WorkflowStatusDO"]
 		}
 	],
+
 	"upload_source_maps": true
 }
